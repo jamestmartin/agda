@@ -303,6 +303,10 @@ instance HasRange a => HasRange (List1 a)
 instance HasRange a => HasRange (List2 a)
 instance HasRange a => HasRange (Maybe a)
 
+-- | Precondition: The ranges of the map elements must point to the
+-- same file (or be empty).
+instance HasRange a => HasRange (Map k a)
+
 -- | Precondition: The ranges of the tuple elements must point to the
 -- same file (or be empty).
 instance (HasRange a, HasRange b) => HasRange (a,b) where

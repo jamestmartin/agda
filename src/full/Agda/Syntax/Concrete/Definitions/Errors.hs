@@ -3,6 +3,8 @@ module Agda.Syntax.Concrete.Definitions.Errors where
 import Control.DeepSeq
 
 import Data.Data
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 import GHC.Generics (Generic)
 
@@ -10,6 +12,7 @@ import Agda.Syntax.Position
 import Agda.Syntax.Concrete
 import Agda.Syntax.Concrete.Name
 import Agda.Syntax.Concrete.Definitions.Types
+import Agda.Syntax.Info (DeclInfo)
 
 import Agda.Interaction.Options.Warnings
 
@@ -32,7 +35,7 @@ data DeclarationException = DeclarationException
 data DeclarationException'
   = MultipleEllipses Pattern
   | InvalidName Name
-  | DuplicateDefinition Name
+  | DuplicateDefinitions Name (List2 Range)
   | DuplicateAnonDeclaration Range
   | MissingWithClauses Name LHS
   | WrongDefinition Name DataRecOrFun DataRecOrFun
@@ -60,7 +63,11 @@ data DeclarationWarning = DeclarationWarning
 -- | Non-fatal errors encountered in the Nicifier.
 data DeclarationWarning'
   -- Please keep in alphabetical order.
-  = EmptyAbstract Range    -- ^ Empty @abstract@  block.
+  = DeclarationsAfterDefinition Name Range (List1 Range)
+      -- ^ Declarations which occur after their definition.
+  | DuplicateDeclarations Name (List2 Range)
+      -- ^ A name which was (forward-)declared multiple times.
+  | EmptyAbstract Range    -- ^ Empty @abstract@  block.
   | EmptyConstructor Range -- ^ Empty @constructor@ block.
   | EmptyField Range       -- ^ Empty @field@     block.
   | EmptyGeneralize Range  -- ^ Empty @variable@  block.
@@ -90,10 +97,10 @@ data DeclarationWarning'
   | InvalidTerminationCheckPragma Range
       -- ^ A {-\# TERMINATING \#-} and {-\# NON_TERMINATING \#-} pragma
       --   that does not apply to any function.
-  | MissingDeclarations [(Name, Range)]
-      -- ^ Definitions (e.g. constructors or functions) without a declaration.
-  | MissingDefinitions [(Name, Range)]
-      -- ^ Declarations (e.g. type signatures) without a definition.
+  | MissingDeclarations Name Range
+      -- ^ Definitions not associated to a declaration.
+  | MissingDefinitions Name (List1 Range)
+      -- ^ Declarations not associated to a definition.
   | NotAllowedInMutual Range String
   | OpenPublicPrivate Range
       -- ^ @private@ has no effect on @open public@.  (But the user might think so.)
@@ -101,10 +108,12 @@ data DeclarationWarning'
       -- ^ @abstract@ has no effect on @open public@.  (But the user might think so.)
   | PolarityPragmasButNotPostulates [Name]
   | PragmaNoTerminationCheck Range
-  -- ^ Pragma @{-\# NO_TERMINATION_CHECK \#-}@ has been replaced
-  --   by @{-\# TERMINATING \#-}@ and @{-\# NON_TERMINATING \#-}@.
+      -- ^ Pragma @{-\# NO_TERMINATION_CHECK \#-}@ has been replaced
+      --   by @{-\# TERMINATING \#-}@ and @{-\# NON_TERMINATING \#-}@.
   | PragmaCompiled Range
-  -- ^ @COMPILE@ pragmas are not allowed in safe mode
+      -- ^ @COMPILE@ pragmas are not allowed in safe mode
+  | RedundantDataTypeSignature Name Range Declaration (List1 Range)
+      -- ^ A forward-declared data type or record was also given a type signature at its definition.
   | ShadowingInTelescope (List1 (Name, List2 Range))
   | UnknownFixityInMixfixDecl [Name]
   | UnknownNamesInFixityDecl [Name]
@@ -123,6 +132,8 @@ declarationWarningName = declarationWarningName' . dwWarning
 declarationWarningName' :: DeclarationWarning' -> WarningName
 declarationWarningName' = \case
   -- Please keep in alphabetical order.
+  DeclarationsAfterDefinition{}     -> DeclarationsAfterDefinition_
+  DuplicateDeclarations{}           -> DuplicateDeclarations_
   EmptyAbstract{}                   -> EmptyAbstract_
   EmptyConstructor{}                -> EmptyConstructor_
   EmptyField{}                      -> EmptyField_
@@ -149,6 +160,7 @@ declarationWarningName' = \case
   PolarityPragmasButNotPostulates{} -> PolarityPragmasButNotPostulates_
   PragmaNoTerminationCheck{}        -> PragmaNoTerminationCheck_
   PragmaCompiled{}                  -> PragmaCompiled_
+  RedundantDataTypeSignature{}      -> RedundantDataTypeSignature_
   ShadowingInTelescope{}            -> ShadowingInTelescope_
   UnknownFixityInMixfixDecl{}       -> UnknownFixityInMixfixDecl_
   UnknownNamesInFixityDecl{}        -> UnknownNamesInFixityDecl_
@@ -164,6 +176,8 @@ unsafeDeclarationWarning = unsafeDeclarationWarning' . dwWarning
 unsafeDeclarationWarning' :: DeclarationWarning' -> Bool
 unsafeDeclarationWarning' = \case
   -- Please keep in alphabetical order.
+  DeclarationsAfterDefinition{}     -> False
+  DuplicateDeclarations{}           -> False
   EmptyAbstract{}                   -> False
   EmptyConstructor{}                -> False
   EmptyField{}                      -> False
@@ -190,6 +204,7 @@ unsafeDeclarationWarning' = \case
   PolarityPragmasButNotPostulates{} -> False
   PragmaNoTerminationCheck{}        -> True  -- not safe
   PragmaCompiled{}                  -> True  -- not safe
+  RedundantDataTypeSignature{}      -> False
   ShadowingInTelescope{}            -> False
   UnknownFixityInMixfixDecl{}       -> False
   UnknownNamesInFixityDecl{}        -> False
@@ -207,7 +222,7 @@ instance HasRange DeclarationException where
 instance HasRange DeclarationException' where
   getRange (MultipleEllipses d)                 = getRange d
   getRange (InvalidName x)                      = getRange x
-  getRange (DuplicateDefinition x)              = getRange x
+  getRange (DuplicateDefinitions _ ds)          = getRange ds
   getRange (DuplicateAnonDeclaration r)         = r
   getRange (MissingWithClauses x lhs)           = getRange lhs
   getRange (WrongDefinition x k k')             = getRange x
@@ -227,12 +242,14 @@ instance HasRange DeclarationWarning' where
   getRange (UnknownFixityInMixfixDecl xs)       = getRange xs
   getRange (UnknownNamesInPolarityPragmas xs)   = getRange xs
   getRange (PolarityPragmasButNotPostulates xs) = getRange xs
-  getRange (MissingDeclarations xs)             = getRange xs
-  getRange (MissingDefinitions xs)              = getRange xs
+  getRange (MissingDeclarations _ r)            = r
+  getRange (MissingDefinitions _ xs)            = getRange xs
   getRange (UselessPrivate r)                   = r
   getRange (NotAllowedInMutual r x)             = r
   getRange (UselessAbstract r)                  = r
   getRange (UselessInstance r)                  = r
+  getRange (DeclarationsAfterDefinition _ r xs) = getRange (r, xs)
+  getRange (DuplicateDeclarations _ xs)         = getRange xs
   getRange (EmptyConstructor r)                 = r
   getRange (EmptyMutual r)                      = r
   getRange (EmptyAbstract r)                    = r
@@ -255,6 +272,7 @@ instance HasRange DeclarationWarning' where
   getRange (PragmaCompiled r)                   = r
   getRange (OpenPublicAbstract r)               = r
   getRange (OpenPublicPrivate r)                = r
+  getRange (RedundantDataTypeSignature _ r _ x) = getRange (r, x)
   getRange (ShadowingInTelescope ns)            = getRange ns
 
 -- These error messages can (should) be terminated by a dot ".",
@@ -264,8 +282,10 @@ instance Pretty DeclarationException' where
     pwords "Multiple ellipses in left-hand side" ++ [pretty p]
   pretty (InvalidName x) = fsep $
     pwords "Invalid name:" ++ [pretty x]
-  pretty (DuplicateDefinition x) = fsep $
-    pwords "Duplicate definition of" ++ [pretty x]
+  pretty (DuplicateDefinitions x rs) = sep
+    [ fsep $ pwords "Duplicate definitions of" ++ [pretty x]
+    , vcat $ fmap (pretty . PrintRange) rs
+    ]
   pretty (DuplicateAnonDeclaration _) = fsep $
     pwords "Duplicate declaration of _"
   pretty (MissingWithClauses x lhs) = fsep $
@@ -313,12 +333,14 @@ instance Pretty DeclarationWarning' where
   pretty (UnknownNamesInPolarityPragmas xs) = fsep $
     pwords "The following names are not declared in the same scope as their polarity pragmas (they could for instance be out of scope, imported from another module, or declared in a super module):"
     ++ punctuate comma  (map pretty xs)
-  pretty (MissingDeclarations xs) = fsep $
-   pwords "The following names are defined but not accompanied by a declaration:"
-   ++ punctuate comma (map (pretty . fst) xs)
-  pretty (MissingDefinitions xs) = fsep $
-   pwords "The following names are declared but not accompanied by a definition:"
-   ++ punctuate comma (map (pretty . fst) xs)
+  pretty (MissingDeclarations xs r) = sep
+    [ fsep $ pwords "The name" ++ [pretty xs] ++ pwords "is not declared before being defined here:"
+    , pretty $ PrintRange r
+    ]
+  pretty (MissingDefinitions x rs) = sep
+    [ fsep $ pwords "The name " ++ [pretty x] ++ pwords "is not defined after being declared here:"
+    , vcat $ fmap (pretty . PrintRange) rs
+    ]
   pretty (NotAllowedInMutual r nd) = fsep $
     text nd : pwords "in mutual blocks are not supported.  Suggestion: get rid of the mutual block by manually ordering declarations"
   pretty (PolarityPragmasButNotPostulates xs) = fsep $
@@ -330,6 +352,16 @@ instance Pretty DeclarationWarning' where
     pwords "Using abstract here has no effect. Abstract applies to only definitions like data definitions, record type definitions and function clauses."
   pretty (UselessInstance _)      = fsep $
     pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
+  pretty (DeclarationsAfterDefinition x r rs) = sep
+    [ fsep $ pwords "The name" ++ [pretty x] ++ pwords "was defined here:"
+    , pretty $ PrintRange r
+    , fsep $ pwords "and then was declared after it was already defined:"
+    , vcat $ fmap (pretty . PrintRange) rs
+    ]
+  pretty (DuplicateDeclarations x rs) = sep
+    [ fsep $ pwords "The name" ++ [pretty x] ++ pwords "is declared multiple times:"
+    , vcat $ fmap (pretty . PrintRange) rs
+    ]
   pretty (EmptyMutual    _)  = fsep $ pwords "Empty mutual block."
   pretty EmptyConstructor{}  = fsep $ pwords "Empty constructor block."
   pretty (EmptyAbstract  _)  = fsep $ pwords "Empty abstract block."
@@ -364,6 +396,16 @@ instance Pretty DeclarationWarning' where
     pwords "public does not have any effect in an abstract block."
   pretty (OpenPublicPrivate _) = fsep $
     pwords "public does not have any effect in a private block."
+  pretty (RedundantDataTypeSignature x r suggestion rs) = sep
+    [ fsep $ pwords "The type" ++ [pretty x] ++ pwords "was declared here:"
+    , vcat $ fmap (pretty . PrintRange) rs
+    , fsep $ pwords "and then given a redundant type signature here:"
+    , pretty $ PrintRange r
+    , fsep $ pwords "In data or record definitions separate from data or record declarations, the ':' and type may be omitted."
+    , "Suggestion: Perhaps you meant to write"
+      $$ nest 2 ("'" <> pretty suggestion <> "'")
+      $$ ("at" <+> pretty r) <> "?"
+    ]
   pretty (ShadowingInTelescope nrs) = fsep $
     pwords "Shadowing in telescope, repeated variable names:"
     ++ punctuate comma (fmap (pretty . fst) nrs)

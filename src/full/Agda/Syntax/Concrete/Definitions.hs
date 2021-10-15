@@ -73,6 +73,7 @@ import Agda.Syntax.Concrete
 import Agda.Syntax.Concrete.Pattern
 import Agda.Syntax.Common hiding (TerminationCheck())
 import qualified Agda.Syntax.Common as Common
+import Agda.Syntax.Info (DeclInfo (DeclInfo))
 import Agda.Syntax.Position
 import Agda.Syntax.Notation
 import Agda.Syntax.Concrete.Pretty () --instance only
@@ -88,7 +89,7 @@ import Agda.Utils.AffineHole
 import Agda.Utils.CallStack ( CallStack, HasCallStack, withCallerCallStack )
 import Agda.Utils.Functor
 import Agda.Utils.Lens
-import Agda.Utils.List (isSublistOf, spanJust)
+import Agda.Utils.List (isSublistOf, spanJust, updateAt)
 import Agda.Utils.List1 (List1, pattern (:|), (<|))
 import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Maybe
@@ -173,7 +174,7 @@ declKind NiceLoneConstructor{}              = OtherDecl
 -- | Replace (Data/Rec/Fun)Sigs with Axioms for postulated names
 --   The first argument is a list of axioms only.
 replaceSigs
-  :: LoneSigs               -- ^ Lone signatures to be turned into Axioms
+  :: Sigs                   -- ^ Lone signatures to be turned into Axioms
   -> [NiceDeclaration]      -- ^ Declarations containing them
   -> [NiceDeclaration]      -- ^ In the output, everything should be defined
 replaceSigs ps = if Map.null ps then id else \case
@@ -183,7 +184,7 @@ replaceSigs ps = if Map.null ps then id else \case
       -- If declaration d of x is mentioned in the map of lone signatures then replace
       -- it with an axiom
       Just (x, axiom)
-        | (Just (LoneSig _ x' _), ps') <- Map.updateLookupWithKey (\ _ _ -> Nothing) x ps
+        | (Just (DeclInfo x' _), ps') <- Map.updateLookupWithKey (\ _ _ -> Nothing) x ps
         , getRange x == getRange x'
             -- Use the range as UID to ensure we do not replace the wrong signature.
             -- This could happen if the user wrote a duplicate definition.
@@ -219,8 +220,7 @@ niceDeclarations fixs ds = do
   nds <- nice ds
 
   -- Check that every signature got its definition.
-  ps <- use loneSigs
-  checkLoneSigs ps
+  ps <- checkDecls
   -- We postulate the missing ones and insert them in place of the corresponding @FunSig@
   let ds = replaceSigs ps nds
 
@@ -613,7 +613,13 @@ niceDeclarations fixs ds = do
     -- We could add a default type signature here, but at the moment we can't
     -- infer the type of a record or datatype, so better to just fail here.
     defaultTypeSig :: DataRecOrFun -> Name -> Maybe Expr -> Nice (Maybe Expr)
-    defaultTypeSig k x t@Just{} = return t
+    defaultTypeSig k x t@(Just _) = do
+      caseMaybeM (getSig x) (return t) $ \k' -> do
+        unless (sameKind k k') $ declarationException $ WrongDefinition x k' k
+        -- The record or datatype was forward declared, but its definition
+        -- also provided a type signature. We can ignore the forward declaration
+        -- for now; we will confirm that it was correct during typechecking. (#5592)
+        t <$ removeLoneSig x
     defaultTypeSig k x Nothing  = do
       caseMaybeM (getSig x) (return Nothing) $ \ k' -> do
         unless (sameKind k k') $ declarationException $ WrongDefinition x k' k

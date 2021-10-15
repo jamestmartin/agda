@@ -176,6 +176,8 @@ data WarningName
   -- Library Warnings
   | LibUnknownField_
   -- Nicifer Warnings
+  | DeclarationsAfterDefinition_
+  | DuplicateDeclarations_
   | EmptyAbstract_
   | EmptyConstructor_
   | EmptyField_
@@ -204,6 +206,7 @@ data WarningName
   | PolarityPragmasButNotPostulates_
   | PragmaCompiled_
   | PragmaNoTerminationCheck_
+  | RedundantDataTypeSignature_
   | ShadowingInTelescope_
   | UnknownFixityInMixfixDecl_
   | UnknownNamesInFixityDecl_
@@ -334,6 +337,8 @@ warningNameDescription = \case
   -- Library Warnings
   LibUnknownField_                 -> "Unknown field in library file."
   -- Nicifer Warnings
+  DeclarationsAfterDefinition_     -> "Declarations which occur after their definition."
+  DuplicateDeclarations_           -> "A name which was was (forward-)declared multiple times."
   EmptyAbstract_                   -> "Empty `abstract' blocks."
   EmptyConstructor_                -> "Empty `constructor' blocks."
   EmptyField_                      -> "Empty `field` blocks."
@@ -362,6 +367,7 @@ warningNameDescription = \case
   PolarityPragmasButNotPostulates_ -> "Polarity pragmas for non-postulates."
   PragmaCompiled_                  -> "'COMPILE' pragmas not allowed in safe mode."
   PragmaNoTerminationCheck_        -> "`NO_TERMINATION_CHECK' pragmas are deprecated"
+  RedundantDataTypeSignature_      -> "A forward-declared data type or record was also given a type signature at its definition."
   ShadowingInTelescope_            -> "Repeated variable name in telescope."
   UnknownFixityInMixfixDecl_       -> "Mixfix names without an associated fixity declaration."
   UnknownNamesInFixityDecl_        -> "Names not declared in the same scope as their syntax or fixity declaration."

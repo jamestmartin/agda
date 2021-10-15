@@ -1766,7 +1766,9 @@ instance ToAbstract NiceDeclaration where
                 -- the data type name is bound to an Axiom, then the error may be caused by
                 -- the illegal type signature. Convert the NiceDataSig into a NiceDataDef
                 -- (which removes the type signature) and suggest it as a possible fix.
-                DefinedName p ax NoSuffix | anameKind ax == AxiomName -> do
+                -- #5592: duplicate data type signatures will now produce a NiceDataSig
+                -- rather than an Axiom.
+                DefinedName p ax NoSuffix | anameKind ax == DataName -> do
                   let suggestion = NiceDataDef r Inserted a pc uc x ls []
                   typeError $ ClashingDefinition cn an (Just suggestion)
                 _ -> typeError err
