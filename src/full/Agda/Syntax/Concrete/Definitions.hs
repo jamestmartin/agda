@@ -144,7 +144,7 @@ combinePositivityChecks = Fold.fold
 
 data DeclKind
     = LoneSigDecl Range DataRecOrFun Name
-    | LoneDefs DataRecOrFun [Name]
+    | LoneDefs Range DataRecOrFun [Name]
     | OtherDecl
   deriving (Eq, Show)
 
@@ -152,10 +152,10 @@ declKind :: NiceDeclaration -> DeclKind
 declKind (FunSig r _ _ _ _ _ tc cc x _)     = LoneSigDecl r (FunName tc cc) x
 declKind (NiceRecSig r _ _ pc uc x pars _)  = LoneSigDecl r (RecName pc uc) x
 declKind (NiceDataSig r _ _ pc uc x pars _) = LoneSigDecl r (DataName pc uc) x
-declKind (FunDef r _ abs ins tc cc x _)     = LoneDefs (FunName tc cc) [x]
-declKind (NiceDataDef _ _ _ pc uc x pars _) = LoneDefs (DataName pc uc) [x]
-declKind (NiceRecDef _ _ _ pc uc x _ pars _) = LoneDefs (RecName pc uc) [x]
-declKind (NiceUnquoteDef _ _ _ tc cc xs _)  = LoneDefs (FunName tc cc) xs
+declKind (FunDef r _ abs ins tc cc x _)     = LoneDefs r (FunName tc cc) [x]
+declKind (NiceDataDef r _ _ pc uc x pars _) = LoneDefs r (DataName pc uc) [x]
+declKind (NiceRecDef r _ _ pc uc x _ pars _) = LoneDefs r (RecName pc uc) [x]
+declKind (NiceUnquoteDef r _ _ tc cc xs _)  = LoneDefs r (FunName tc cc) xs
 declKind Axiom{}                            = OtherDecl
 declKind NiceField{}                        = OtherDecl
 declKind PrimitiveFunction{}                = OtherDecl
@@ -171,6 +171,7 @@ declKind NiceGeneralize{}                   = OtherDecl
 declKind NiceUnquoteDecl{}                  = OtherDecl
 declKind NiceLoneConstructor{}              = OtherDecl
 
+{-}
 -- | Replace (Data/Rec/Fun)Sigs with Axioms for postulated names
 --   The first argument is a list of axioms only.
 replaceSigs
@@ -208,6 +209,7 @@ replaceSigs ps = if Map.null ps then id else \case
         let e = Generalized $ makePi (lamBindingsToTelescope r pars) t in
         Just (x, Axiom r acc abst NotInstanceDef defaultArgInfo x e)
       _ -> Nothing
+-}
 
 -- | Main. Fixities (or more precisely syntax declarations) are needed when
 --   grouping function clauses.
@@ -242,12 +244,11 @@ niceDeclarations fixs ds = do
         OtherDecl    -> (d :) <$> inferMutualBlocks ds
         LoneDefs{}   -> (d :) <$> inferMutualBlocks ds  -- Andreas, 2017-10-09, issue #2576: report error in ConcreteToAbstract
         LoneSigDecl r k x  -> do
-          _ <- addLoneSig r x k
+          _ <- addSig k r x
           InferredMutual checks nds0 ds1 <- untilAllDefined (mutualChecks k) ds
           -- If we still have lone signatures without any accompanying definition,
           -- we postulate the definition and substitute the axiom for the lone signature
-          ps <- use loneSigs
-          checkLoneSigs ps
+          ps <- checkDecls
           let ds0 = replaceSigs ps (d : nds0) -- NB: don't forget the LoneSig the block started with!
           -- We then keep processing the rest of the block
           tc <- combineTerminationChecks (getRange d) (mutualTermination checks)
@@ -263,10 +264,10 @@ niceDeclarations fixs ds = do
               []     -> return (InferredMutual checks [] ds)
               d : ds -> case declKind d of
                 LoneSigDecl r k x -> do
-                  void $ addLoneSig r x k
+                  void $ addSig k r x
                   extendInferredBlock  d <$> untilAllDefined (mutualChecks k <> checks) ds
-                LoneDefs k xs -> do
-                  mapM_ removeLoneSig xs
+                LoneDefs r k xs -> do
+                  mapM_ (addDef k r) xs
                   extendInferredBlock  d <$> untilAllDefined (mutualChecks k <> checks) ds
                 OtherDecl -> extendInferredBlock d <$> untilAllDefined checks ds
 
@@ -295,7 +296,7 @@ niceDeclarations fixs ds = do
           -- (like @x y z : A@) into several type signatures (with imprecise ranges).
           let r = getRange x
           -- register x as lone type signature, to recognize clauses later
-          x' <- addLoneSig r x $ FunName termCheck covCheck
+          x' <- addSig (FunName termCheck covCheck) r x
           return ([FunSig r PublicAccess ConcreteDef NotInstanceDef NotMacroDef info termCheck covCheck x' t] , ds)
 
         -- Should not show up: all FieldSig are part of a Field block
@@ -356,7 +357,7 @@ niceDeclarations fixs ds = do
         DataSig r x tel t -> do
           pc <- use positivityCheckPragma
           uc <- use universeCheckPragma
-          _ <- addLoneSig r x $ DataName pc uc
+          _ <- addSig (DataName pc uc) r x
           (,ds) <$> dataOrRec pc uc NiceDataDef NiceDataSig (niceAxioms DataBlock) r x (Just (tel, t)) Nothing
 
         Data r x tel t cs -> do
@@ -367,7 +368,7 @@ niceDeclarations fixs ds = do
           -- 'universeCheckPragma' AND the one from the signature say so.
           uc <- use universeCheckPragma
           uc <- if uc == NoUniverseCheck then return uc else getUniverseCheckFromSig x
-          mt <- defaultTypeSig (DataName pc uc) x (Just t)
+          mt <- defaultTypeSig (DataName pc uc) x (Just t) r
           (,ds) <$> dataOrRec pc uc NiceDataDef NiceDataSig (niceAxioms DataBlock) r x ((tel,) <$> mt) (Just (tel, cs))
 
         DataDef r x tel cs -> do
@@ -378,13 +379,13 @@ niceDeclarations fixs ds = do
           -- 'universeCheckPragma' AND the one from the signature say so.
           uc <- use universeCheckPragma
           uc <- if uc == NoUniverseCheck then return uc else getUniverseCheckFromSig x
-          mt <- defaultTypeSig (DataName pc uc) x Nothing
+          mt <- defaultTypeSig (DataName pc uc) x Nothing r
           (,ds) <$> dataOrRec pc uc NiceDataDef NiceDataSig (niceAxioms DataBlock) r x ((tel,) <$> mt) (Just (tel, cs))
 
         RecordSig r x tel t         -> do
           pc <- use positivityCheckPragma
           uc <- use universeCheckPragma
-          _ <- addLoneSig r x $ RecName pc uc
+          _ <- addSig (RecName pc uc) r x
           return ([NiceRecSig r PublicAccess ConcreteDef pc uc x tel t] , ds)
 
         Record r x dir tel t cs   -> do
@@ -395,7 +396,7 @@ niceDeclarations fixs ds = do
           -- 'universeCheckPragma' AND the one from the signature say so.
           uc <- use universeCheckPragma
           uc <- if uc == NoUniverseCheck then return uc else getUniverseCheckFromSig x
-          mt <- defaultTypeSig (RecName pc uc) x (Just t)
+          mt <- defaultTypeSig (RecName pc uc) x (Just t) r
           (,ds) <$> dataOrRec pc uc (\ r o a pc uc x tel cs -> NiceRecDef r o a pc uc x dir tel cs) NiceRecSig
                       return r x ((tel,) <$> mt) (Just (tel, cs))
 
@@ -407,7 +408,7 @@ niceDeclarations fixs ds = do
           -- 'universeCheckPragma' AND the one from the signature say so.
           uc <- use universeCheckPragma
           uc <- if uc == NoUniverseCheck then return uc else getUniverseCheckFromSig x
-          mt <- defaultTypeSig (RecName pc uc) x Nothing
+          mt <- defaultTypeSig (RecName pc uc) x Nothing r
           (,ds) <$> dataOrRec pc uc (\ r o a pc uc x tel cs -> NiceRecDef r o a pc uc x dir tel cs) NiceRecSig
                       return r x ((tel,) <$> mt) (Just (tel, cs))
 
@@ -416,7 +417,7 @@ niceDeclarations fixs ds = do
         Mutual r ds' -> do
           -- The lone signatures encountered so far are not in scope
           -- for the mutual definition
-          forgetLoneSigs
+          forgetDecls
           case ds' of
             [] -> justWarning $ EmptyMutual r
             _  -> (,ds) <$> (singleton <$> (mkOldMutual r =<< nice ds'))
@@ -424,7 +425,7 @@ niceDeclarations fixs ds = do
         InterleavedMutual r ds' -> do
           -- The lone signatures encountered so far are not in scope
           -- for the mutual definition
-          forgetLoneSigs
+          forgetDecls
           case ds' of
             [] -> justWarning $ EmptyMutual r
             _  -> (,ds) <$> (singleton <$> (mkInterleavedMutual r =<< nice ds'))
@@ -477,7 +478,7 @@ niceDeclarations fixs ds = do
           tc <- use terminationCheckPragma
           cc <- use coverageCheckPragma
           return ([NiceUnquoteDecl r PublicAccess ConcreteDef NotInstanceDef tc cc xs e] , ds)
-
+{-}
         UnquoteDef r xs e -> do
           sigs <- map fst . loneFuns <$> use loneSigs
           List1.ifNotNull (filter (`notElem` sigs) xs)
@@ -485,7 +486,7 @@ niceDeclarations fixs ds = do
             {-else-} $ do
               mapM_ removeLoneSig xs
               return ([NiceUnquoteDef r PublicAccess ConcreteDef TerminationCheck YesCoverageCheck xs e] , ds)
-
+-}
         Pragma p -> nicePragma p ds
 
     nicePragma :: Pragma -> [Declaration] -> Nice ([NiceDeclaration], [Declaration])
@@ -612,18 +613,18 @@ niceDeclarations fixs ds = do
 
     -- We could add a default type signature here, but at the moment we can't
     -- infer the type of a record or datatype, so better to just fail here.
-    defaultTypeSig :: DataRecOrFun -> Name -> Maybe Expr -> Nice (Maybe Expr)
-    defaultTypeSig k x t@(Just _) = do
+    defaultTypeSig :: DataRecOrFun -> Name -> Maybe Expr -> Range -> Nice (Maybe Expr)
+    defaultTypeSig k x t@(Just _) r = do
       caseMaybeM (getSig x) (return t) $ \k' -> do
         unless (sameKind k k') $ declarationException $ WrongDefinition x k' k
         -- The record or datatype was forward declared, but its definition
         -- also provided a type signature. We can ignore the forward declaration
         -- for now; we will confirm that it was correct during typechecking. (#5592)
-        t <$ removeLoneSig x
-    defaultTypeSig k x Nothing  = do
+        t <$ addDef k r x
+    defaultTypeSig k x Nothing r = do
       caseMaybeM (getSig x) (return Nothing) $ \ k' -> do
         unless (sameKind k k') $ declarationException $ WrongDefinition x k' k
-        Nothing <$ removeLoneSig x
+        Nothing <$ addDef k r x
 
     dataOrRec
       :: forall a decl
@@ -807,8 +808,7 @@ niceDeclarations fixs ds = do
       (other, (m, checks, _)) <- runStateT (groupByBlocks r ds') (empty, mempty, 0)
       let idecls = other ++ concatMap (uncurry interleavedDecl) (Map.toList m)
       let decls0 = map snd $ List.sortBy (compare `on` fst) idecls
-      ps <- use loneSigs
-      checkLoneSigs ps
+      ps <- checkDecls
       let decls = replaceSigs ps decls0
       -- process the checks
       tc <- combineTerminationChecks r (mutualTermination checks)
@@ -1109,7 +1109,7 @@ niceDeclarations fixs ds = do
         -- isTypeSig _                           = False
 
         sigNames  = [ (r, x, k) | LoneSigDecl r k x <- map declKind ds' ]
-        defNames  = [ (x, k) | LoneDefs k xs <- map declKind ds', x <- xs ]
+        defNames  = [ (x, k) | LoneDefs r k xs <- map declKind ds', x <- xs ]
         -- compute the set difference with equality just on names
         loneNames = [ (r, x, k) | (r, x, k) <- sigNames, List.all ((x /=) . fst) defNames ]
 

@@ -146,8 +146,8 @@ makeNameUnique x
     i <- nextNameId
     return x{ nameId = i }
 
-addKind :: Name -> DataRecOrFun -> Nice ()
-addKind x k = kinds %== \ ks -> do
+addKind :: DataRecOrFun -> Name -> Nice ()
+addKind k x = kinds %== \ ks -> do
   -- FIXME: cross-compare pragmas!!
   let (mk, ks') = Map.insertLookupWithKey (\ _k new _old -> new) x k ks
   case mk of
@@ -159,13 +159,13 @@ getSig x = Map.lookup x <$> use kinds
 
 -- | Add a type signature to the state.
 --   Return the name (which is made unique if 'isNoName').
-addSig :: Range -> Name -> DataRecOrFun -> Nice Name
-addSig r x k = do
+addSig :: DataRecOrFun -> Range -> Name -> Nice Name
+addSig k r x = do
     ss <- use sigs
     when (isNoName x && Map.member x ss) $
       declarationException $ DuplicateAnonDeclaration r
     x' <- makeNameUnique x
-    addKind x k
+    addKind k x
     sigs .= insertSig x x' r ss
     whenM (Map.member x <$> use defs) $ lateSigs %= insertSig x x' r
     return x'
@@ -178,9 +178,9 @@ addSig r x k = do
                           ss
 
 -- | Add a definition to the state.
-addDef :: Range -> Name -> DataRecOrFun -> Nice ()
-addDef r x k = do
-  addKind x k
+addDef :: DataRecOrFun -> Range -> Name -> Nice ()
+addDef k r x = do
+  addKind k x
   if isNoName x
     then sigs %= Map.delete x
     else defs %= Map.insertWithKey (\ _k new old -> List1.append old (List1.toList new))
